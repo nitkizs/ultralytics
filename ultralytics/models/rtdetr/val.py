@@ -9,8 +9,12 @@ from ultralytics.data import YOLODataset
 from ultralytics.data.augment import Compose, Format, v8_transforms
 from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import colorstr, ops
+import psutil
+import os
+
 
 __all__ = ("RTDETRValidator",)  # tuple or list
+print("val.py file is running")
 
 
 class RTDETRDataset(YOLODataset):
@@ -103,6 +107,13 @@ class RTDETRDataset(YOLODataset):
 
 
 class RTDETRValidator(DetectionValidator):
+    ###########################
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.peak_gpu_MB = 0.0
+        self.peak_cpu_MB = 0.0
+        self.start_cpu_mem = psutil.Process(os.getpid()).memory_info().rss / 1024**2
+    ##################################
     """
     RTDETRValidator extends the DetectionValidator class to provide validation capabilities specifically tailored for
     the RT-DETR (Real-Time DETR) object detection model.
@@ -170,6 +181,11 @@ class RTDETRValidator(DetectionValidator):
                 - 'conf': Tensor of shape (N,) with confidence scores
                 - 'cls': Tensor of shape (N,) with class indices
         """
+        """Apply NMS and track GPU/CPU peak memory usage."""
+        ###########################
+        process = psutil.Process(os.getpid())
+        ###########################
+        
         if not isinstance(preds, (list, tuple)):  # list for PyTorch inference but list[0] Tensor for export inference
             preds = [preds, None]
 
@@ -184,8 +200,28 @@ class RTDETRValidator(DetectionValidator):
             # Sort by confidence to correctly get internal metrics
             pred = pred[score.argsort(descending=True)]
             outputs[i] = pred[score > self.args.conf]
+            
+        # #####################
+        # Update peak memory
+            if torch.cuda.is_available():
+                self.peak_gpu_MB = max(self.peak_gpu_MB, torch.cuda.max_memory_allocated() / 1024**2)
+            self.peak_cpu_MB = max(self.peak_cpu_MB, process.memory_info().rss / 1024**2)
+        # #####################
 
         return [{"bboxes": x[:, :4], "conf": x[:, 4], "cls": x[:, 5]} for x in outputs]
+    
+################################
+    def __call__(self, *args, **kwargs):
+        """Run full validation and automatically print peak memory at the end."""
+        results = super().__call__(*args, **kwargs)
+
+        # Print peak memory after full validation
+        if torch.cuda.is_available():
+            print(f"[Overall] GPU Peak Memory: {self.peak_gpu_MB:.2f} MB")
+        print(f"[Overall] CPU Peak Memory: {self.peak_cpu_MB:.2f} MB (start: {self.start_cpu_mem:.2f} MB)")
+
+        return results
+##############################################
 
     def pred_to_json(self, predn: Dict[str, torch.Tensor], pbatch: Dict[str, Any]) -> None:
         """
